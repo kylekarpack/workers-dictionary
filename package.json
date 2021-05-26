@@ -10,8 +10,6 @@
   "dependencies": {
     "cheerio": "^1.0.0-rc.9",
     "graphql": "^14.2.1",
-    "jsdom": "^16.6.0",
-    "node-fetch": "^2.6.1",
     "request": "^2.88.2"
   },
   "license": "MIT",
