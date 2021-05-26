@@ -1,42 +1,47 @@
 import cheerio from "cheerio";
-import jsdom from "jsdom";
+import {JSDOM} from "jsdom";
 import fetch from "node-fetch";
+import { promisify } from "util";
 
 addEventListener("fetch", (event) => {
 	event.respondWith(handleRequest(event.request));
 });
+
+const responseConfig = {
+	type: "application/json",
+};
+
 /**
- * Respond with hello worker text
+ * Handle incoming requests
  * @param {Request} request
  */
 async function handleRequest(request) {
-	return new Promise((resolve, reject) => {
-    const url = new URL(request.url);
-    const searchTerm = url.pathname;
-    if (!searchTerm) {
-      reject(new Response({
-        error: "No word provided"
-      }, {
-        type: "application/json",
-      }))
-    }
-		findDefinitions(searchTerm, "en", (error, data) => {
-			if (error) {
-				reject(
-					new Response({
-            error
-          }, {
-						type: "application/json",
-					})
-				);
-			}
-			resolve(
-				new Response(JSON.stringify(data), {
-					type: "application/json",
-				})
-			);
-		});
-	});
+	const promisifyedFindDefinitions = promisify(findDefinitions);
+
+	// Validate the term
+	const url = new URL(request.url);
+	const searchTerm = url.pathname.replace("/", "");
+	if (!searchTerm) {
+		return new Response(
+			{
+				error: "No word provided",
+			},
+			responseConfig
+		);
+	}
+
+	// Get its definition
+	try {
+		const data = await promisifyedFindDefinitions(searchTerm, "en");
+		return new Response(JSON.stringify(data), responseConfig);
+	} catch (error) {
+		return new Response(
+			{
+				error,
+			},
+			responseConfig
+		);
+	}
 }
 
 function transformDictionary(dictionary, callback) {
@@ -354,8 +359,6 @@ function giveBody(url, options, callback) {
 }
 
 function cleanBody(body) {
-	const { JSDOM } = jsdom;
-
 	let c = "",
 		d = 0,
 		e = 0,
