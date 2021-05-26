@@ -1,15 +1,16 @@
 import cheerio from "cheerio";
-import {JSDOM} from "jsdom";
-import fetch from "node-fetch";
 import { promisify } from "util";
 
 addEventListener("fetch", (event) => {
 	event.respondWith(handleRequest(event.request));
 });
 
-const responseConfig = {
-	type: "application/json",
-};
+function getResponse(content, err) {
+	return new Response(JSON.stringify(content), {
+		type: "application/json",
+		status: err ? 400 : 200
+	});
+}
 
 /**
  * Handle incoming requests
@@ -22,25 +23,17 @@ async function handleRequest(request) {
 	const url = new URL(request.url);
 	const searchTerm = url.pathname.replace("/", "");
 	if (!searchTerm) {
-		return new Response(
-			{
-				error: "No word provided",
-			},
-			responseConfig
-		);
+		return getResponse({
+			error: "No word provided",
+		}, true);
 	}
 
 	// Get its definition
 	try {
 		const data = await promisifyedFindDefinitions(searchTerm, "en");
-		return new Response(JSON.stringify(data), responseConfig);
+		return getResponse(data);
 	} catch (error) {
-		return new Response(
-			{
-				error,
-			},
-			responseConfig
-		);
+		return getResponse({ error }, true);
 	}
 }
 
@@ -74,8 +67,7 @@ function findEnglishDefinitions(word, callback) {
 		return callback({
 			statusCode: 404,
 			title: "Word not found",
-			message:
-				"Sorry pal, we couldn't find definitions for the word you were looking for.",
+			message: "We couldn't find definitions for the word you were looking for.",
 			resolution: "You can try the search again or head to the web instead.",
 		});
 	}
@@ -93,8 +85,7 @@ function findEnglishDefinitions(word, callback) {
 			return callback({
 				statusCode: 404,
 				title: "Word not found",
-				message:
-					"Sorry pal, we couldn't find definitions for the word you were looking for.",
+				message: "We couldn't find definitions for the word you were looking for.",
 				resolution: "You can try the search again or head to the web instead.",
 			});
 		}
@@ -226,8 +217,7 @@ function findNonEnglishDefinitions(word, language, callback) {
 			return callback({
 				statusCode: 404,
 				title: "Word not found",
-				message:
-					"Sorry pal, we couldn't find definitions for the word you were looking for.",
+				message: "We couldn't find definitions for the word you were looking for.",
 				resolution: "You can try the search again or head to the web instead.",
 			});
 		}
@@ -349,7 +339,7 @@ function giveBody(url, options, callback) {
 			return callback({
 				statusCode: 500,
 				title: "Something Went Wrong.",
-				message: "Sorry pal, Our servers ran into some problem.",
+				message: "Our servers ran into some problem.",
 				resolution: "You can try the search again or head to the web instead.",
 			});
 		}
@@ -388,7 +378,7 @@ function cleanBody(body) {
 	arr[1] = "<script>";
 	arr[arr.length] = "</script>";
 
-	return new JSDOM(arr.join(""), { runScripts: "dangerously" }).serialize();
+	return arr.join("");
 }
 
 function fetchData(url, callback) {
