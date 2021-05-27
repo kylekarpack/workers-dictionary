@@ -1,5 +1,4 @@
 import cheerio from "cheerio";
-import { promisify } from "util";
 
 addEventListener("fetch", (event) => {
 	event.respondWith(handleRequest(event.request));
@@ -8,7 +7,7 @@ addEventListener("fetch", (event) => {
 function getResponse(content, err) {
 	return new Response(JSON.stringify(content), {
 		type: "application/json",
-		status: err ? 400 : 200
+		status: err ? 400 : 200,
 	});
 }
 
@@ -17,335 +16,176 @@ function getResponse(content, err) {
  * @param {Request} request
  */
 async function handleRequest(request) {
-	const promisifyedFindDefinitions = promisify(findDefinitions);
 
 	// Validate the term
 	const url = new URL(request.url);
 	const searchTerm = url.pathname.replace("/", "");
 	if (!searchTerm) {
-		return getResponse({
-			error: "No word provided",
-		}, true);
+		return getResponse(
+			{
+				error: "No word provided",
+			},
+			true
+		);
 	}
 
 	// Get its definition
 	try {
-		const data = await promisifyedFindDefinitions(searchTerm, "en");
+		const data = await findDefinitions(searchTerm, "en");
 		return getResponse(data);
 	} catch (error) {
 		return getResponse({ error }, true);
 	}
 }
 
-function transformDictionary(dictionary, callback) {
-	/* global API_VERSION */
-	if (API_VERSION !== 1) {
-		return dictionary;
-	}
-
-	return dictionary.map((entry) => {
-		let { meanings, ...otherProps } = entry;
-
-		meanings = meanings.reduce((meanings, meaning) => {
-			let partOfSpeech, rest;
-
-			({ partOfSpeech, ...rest } = meaning);
-			meanings[partOfSpeech] = rest;
-
-			return meanings;
-		}, {});
-
-		return {
-			...otherProps,
-			meaning: meanings,
-		};
-	});
-}
-
-function findEnglishDefinitions(word, callback) {
+async function findDefinitions(word) {
 	if (encodeURIComponent(word).includes("%20%20")) {
-		return callback({
+		throw {
 			statusCode: 404,
 			title: "Word not found",
-			message: "We couldn't find definitions for the word you were looking for.",
+			message:
+				"We couldn't find definitions for the word you were looking for.",
 			resolution: "You can try the search again or head to the web instead.",
-		});
+		};
 	}
 
 	const URI = `https://www.lexico.com/en/definition/${word}`;
 
-	return giveBody(URI, (err, body) => {
-		if (err) {
-			return callback(err);
+	const body = await giveBody(URI);
+
+	const $ = cheerio.load(body);
+
+	if (!$(".hwg .hw").first()[0]) {
+		throw {
+			statusCode: 404,
+			title: "Word not found",
+			message:
+				"We couldn't find definitions for the word you were looking for.",
+			resolution: "You can try the search again or head to the web instead.",
+		};
+	}
+
+	var dictionary = [],
+		numberOfentryGroup,
+		arrayOfEntryGroup = [],
+		grambs = $("section.gramb"),
+		entryHead = $(".entryHead.primary_homograph");
+
+	let i,
+		j = 0;
+
+	for (i = 0; i < entryHead.length; i++) {
+		arrayOfEntryGroup[i] =
+			$("#" + entryHead[0].attribs.id + " ~ .gramb").length -
+			$("#" + entryHead[i].attribs.id + " ~ .gramb").length;
+	}
+	arrayOfEntryGroup[i] = $("#" + entryHead[0].attribs.id + " ~ .gramb").length;
+
+	numberOfentryGroup = arrayOfEntryGroup.length - 1;
+
+	for (i = 0; i < numberOfentryGroup; i++) {
+		var entry = {},
+			word = $(".hwg .hw")[i].childNodes[0].nodeValue,
+			phonetic = $(".pronSection.etym .pron .phoneticspelling")[i],
+			pronunciation = $(".pronSection.etym .pron .speaker")[i],
+			origin = $(".pronSection.etym")
+				.eq(i)
+				.prev()
+				.find(".senseInnerWrapper p")
+				.text();
+
+		entry.word = word;
+
+		if (phonetic) {
+			entry.phonetic = phonetic.childNodes[0] && phonetic.childNodes[0].data;
+		}
+		if (pronunciation) {
+			entry.pronunciation = $(pronunciation).find("a audio").attr("src");
 		}
 
-		const $ = cheerio.load(body);
+		origin && (entry.origin = origin);
 
-		if (!$(".hwg .hw").first()[0]) {
-			return callback({
-				statusCode: 404,
-				title: "Word not found",
-				message: "We couldn't find definitions for the word you were looking for.",
-				resolution: "You can try the search again or head to the web instead.",
-			});
-		}
+		entry.meaning = {};
 
-		var dictionary = [],
-			numberOfentryGroup,
-			arrayOfEntryGroup = [],
-			grambs = $("section.gramb"),
-			entryHead = $(".entryHead.primary_homograph");
+		let start = arrayOfEntryGroup[i],
+			end = arrayOfEntryGroup[i + 1];
 
-		let i,
-			j = 0;
+		for (j = start; j < end; j++) {
+			var partofspeech = $(grambs[j]).find(".ps.pos .pos").text();
 
-		for (i = 0; i < entryHead.length; i++) {
-			arrayOfEntryGroup[i] =
-				$("#" + entryHead[0].attribs.id + " ~ .gramb").length -
-				$("#" + entryHead[i].attribs.id + " ~ .gramb").length;
-		}
-		arrayOfEntryGroup[i] = $(
-			"#" + entryHead[0].attribs.id + " ~ .gramb"
-		).length;
+			$(grambs[j])
+				.find(".semb")
+				.each(function (j, element) {
+					var meaningArray = [];
 
-		numberOfentryGroup = arrayOfEntryGroup.length - 1;
+					$(element)
+						.find("> li")
+						.each(function (j, element) {
+							var newDefinition = {},
+								item = $(element).find("> .trg"),
+								definition = $(item).find(" > p > .ind").text(),
+								example = $(item).find(" > .exg  > .ex > em").first().text(),
+								synonymsText = $(item)
+									.find(" > .synonyms > .exg  > div")
+									.first()
+									.text(),
+								synonyms = synonymsText
+									.split(/,|;/)
+									.filter((synonym) => synonym != " " && synonym)
+									.map(function (item) {
+										return item.trim();
+									});
 
-		for (i = 0; i < numberOfentryGroup; i++) {
-			var entry = {},
-				word = $(".hwg .hw")[i].childNodes[0].nodeValue,
-				phonetic = $(".pronSection.etym .pron .phoneticspelling")[i],
-				pronunciation = $(".pronSection.etym .pron .speaker")[i],
-				origin = $(".pronSection.etym")
-					.eq(i)
-					.prev()
-					.find(".senseInnerWrapper p")
-					.text();
+							if (definition.length === 0) {
+								definition = $(item).find(".crossReference").first().text();
+							}
 
-			entry.word = word;
+							if (definition.length > 0) newDefinition.definition = definition;
 
-			if (phonetic) {
-				entry.phonetic = phonetic.childNodes[0] && phonetic.childNodes[0].data;
-			}
-			if (pronunciation) {
-				entry.pronunciation = $(pronunciation).find("a audio").attr("src");
-			}
-
-			origin && (entry.origin = origin);
-
-			entry.meaning = {};
-
-			let start = arrayOfEntryGroup[i],
-				end = arrayOfEntryGroup[i + 1];
-
-			for (j = start; j < end; j++) {
-				var partofspeech = $(grambs[j]).find(".ps.pos .pos").text();
-
-				$(grambs[j])
-					.find(".semb")
-					.each(function (j, element) {
-						var meaningArray = [];
-
-						$(element)
-							.find("> li")
-							.each(function (j, element) {
-								var newDefinition = {},
-									item = $(element).find("> .trg"),
-									definition = $(item).find(" > p > .ind").text(),
-									example = $(item).find(" > .exg  > .ex > em").first().text(),
-									synonymsText = $(item)
-										.find(" > .synonyms > .exg  > div")
-										.first()
-										.text(),
-									synonyms = synonymsText
-										.split(/,|;/)
-										.filter((synonym) => synonym != " " && synonym)
-										.map(function (item) {
-											return item.trim();
-										});
-
-								if (definition.length === 0) {
-									definition = $(item).find(".crossReference").first().text();
-								}
-
-								if (definition.length > 0)
-									newDefinition.definition = definition;
-
-								if (example.length > 0)
-									// Remove line break and extra space
-									newDefinition.example = example
-										.substring(1, example.length - 1)
-										.replace(/(\r\n|\n|\r)/gm, " ")
-										.trim();
-
-								if (synonyms.length > 0) newDefinition.synonyms = synonyms;
-
-								meaningArray.push(newDefinition);
-							});
-
-						if (partofspeech.length === 0) partofspeech = "crossReference";
-
-						entry.meaning[partofspeech] = meaningArray.slice();
-					});
-			}
-			dictionary.push(entry);
-		}
-
-		Object.keys(dictionary).forEach((key) => {
-			Array.isArray(dictionary[key]) &&
-				!dictionary[key].length &&
-				delete dictionary[key];
-		});
-
-		return callback(null, dictionary);
-	});
-}
-
-function findNonEnglishDefinitions(word, language, callback) {
-	let URI = `https://www.google.com/async/dictw?hl=${language}&async=term:${word},corpus:${language},hhdr:false,hwdgt:true,wfp:true,xpnd:true,ttl:,tsl:${language},_id:dictionary-modules,_pms:s,_jsfs:Ffpdje,_fmt:pc`;
-
-	return giveBody(URI, { cleanBody: true }, (err, body) => {
-		if (err) {
-			return callback(err);
-		}
-
-		const $ = cheerio.load(body);
-
-		if (
-			$(".lr_container").length === 0 ||
-			$("[data-dobid='hdw']").length === 0
-		) {
-			return callback({
-				statusCode: 404,
-				title: "Word not found",
-				message: "We couldn't find definitions for the word you were looking for.",
-				resolution: "You can try the search again or head to the web instead.",
-			});
-		}
-
-		let dictionary = [];
-
-		$(".lr_container")
-			.find(".VpH2eb.vmod.XpoqFe")
-			.each((index, e) => {
-				let audio,
-					word,
-					phonetic,
-					origin,
-					meanings = [];
-
-				word = $(e).find(".WI9k4c").find("[data-dobid='hdw']").text();
-				phonetic = $(e).find(".WI9k4c").find(".S23sjd").text();
-				audio = $(e).find(".gycwpf.D5gqpe").find("source").attr("src");
-				origin = $(e)
-					.find("[jsname='Hqfs0d']")
-					.find("div div div")
-					.last()
-					.find("span")
-					.not(":has(sup)")
-					.text();
-
-				$(e)
-					.children(".vmod")
-					.children(".vmod")
-					.each((index, e) => {
-						let partOfSpeech,
-							definitions = [];
-
-						partOfSpeech = $(e).find(".vpx4Fd").find(".pgRvse.vdBwhd i").text();
-
-						$(e)
-							.find("div > ol")
-							.first()
-							.children("li")
-							.each((index, e) => {
-								let definition,
-									example,
-									synonyms = [],
-									PARENT_SELECTOR =
-										'.thODed.Uekwlc.XpoqFe div[jsname="cJAsRb"] .QIclbb.XpoqFe';
-
-								definition = $(e)
-									.find(`${PARENT_SELECTOR} div[data-dobid='dfn']`)
-									.text();
-
-								// remove linebreak and extra spaces
-								example = $(e)
-									.find(`${PARENT_SELECTOR} .vk_gy`)
-									.text()
+							if (example.length > 0)
+								// Remove line break and extra space
+								newDefinition.example = example
+									.substring(1, example.length - 1)
 									.replace(/(\r\n|\n|\r)/gm, " ")
 									.trim();
 
-								// In french language example are not wrapped around quotes.
-								example[0] === '"' && (example = example.slice(1, -1));
+							if (synonyms.length > 0) newDefinition.synonyms = synonyms;
 
-								$(e)
-									.find(`${PARENT_SELECTOR} > div.qFRZdb div.CqMNyc`)
-									.children("div[role='listitem']")
-									.each((index, e) => {
-										let synonym;
-
-										synonym = $(e).find(".lLE0jd.gWUzU.F5z5N").text();
-
-										synonyms.push(synonym);
-									});
-
-								definitions.push({
-									definition,
-									example,
-									synonyms,
-								});
-							});
-
-						meanings.push({
-							partOfSpeech,
-							definitions,
+							meaningArray.push(newDefinition);
 						});
-					});
 
-				dictionary.push({
-					word,
-					phonetic,
-					audio,
-					origin,
-					meanings,
+					if (partofspeech.length === 0) partofspeech = "crossReference";
+
+					entry.meaning[partofspeech] = meaningArray.slice();
 				});
-			});
-
-		return callback(null, transformDictionary(dictionary));
-	});
-}
-
-function findDefinitions(word, language, callback) {
-	if (language === "en") {
-		return findEnglishDefinitions(word, callback);
+		}
+		dictionary.push(entry);
 	}
 
-	return findNonEnglishDefinitions(word, language, callback);
+	Object.keys(dictionary).forEach((key) => {
+		Array.isArray(dictionary[key]) &&
+			!dictionary[key].length &&
+			delete dictionary[key];
+	});
+
+	return dictionary;
 }
 
-function giveBody(url, options, callback) {
-	!callback && (callback = options) && (options = {});
+async function giveBody(url, options = {}) {
+	const body = await fetchData(url);
 
-	return fetchData(url, function (err, body) {
-		if (err) {
-			console.log("UR: ERR", url, err);
-			return callback(err);
-		}
+	try {
+		options.cleanBody && (body = cleanBody(body));
+	} catch (e) {
+		throw {
+			statusCode: 500,
+			title: "Something Went Wrong.",
+			message: "Our servers ran into some problem.",
+			resolution: "You can try the search again or head to the web instead.",
+		};
+	}
 
-		try {
-			options.cleanBody && (body = cleanBody(body));
-		} catch (e) {
-			console.log("ERRORED HERE", e);
-			return callback({
-				statusCode: 500,
-				title: "Something Went Wrong.",
-				message: "Our servers ran into some problem.",
-				resolution: "You can try the search again or head to the web instead.",
-			});
-		}
-
-		return callback(null, body);
-	});
+	return body;
 }
 
 function cleanBody(body) {
@@ -381,23 +221,20 @@ function cleanBody(body) {
 	return arr.join("");
 }
 
-function fetchData(url, callback) {
-	fetch(encodeURI(url), {
-		headers: {
-			Host: "lexico.com",
-		},
-	})
-		.then((d) => {
-			d.text().then((data) => {
-				callback(null, data);
-			});
-		})
-		.catch((err) => {
-			callback({
-				statusCode: 500,
-				title: "Something Went Wrong.",
-				message: err.toString(),
-				resolution: "You can try the search again or head to the web instead.",
-			});
+async function fetchData(url) {
+	try {
+		const response = await fetch(encodeURI(url), {
+			headers: {
+				Host: "lexico.com",
+			},
 		});
+		return await response.text();
+	} catch (err) {
+		throw {
+			statusCode: 500,
+			title: "Something Went Wrong.",
+			message: err.toString(),
+			resolution: "You can try the search again or head to the web instead.",
+		};
+	}
 }
